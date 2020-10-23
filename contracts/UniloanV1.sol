@@ -605,7 +605,7 @@ contract UniloanV1Pair {
     IUniswapV2Router02 public constant UNIV2R02 = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
 
     /// @notice Staking Rewards contract (if any)
-    IStakingRewards public UniStakingRewards;
+    IStakingRewards public uniStakingRewards;
 
     /// @notice The EIP-712 typehash for the contract's domain
     bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint chainId,address verifyingContract)");
@@ -743,20 +743,12 @@ contract UniloanV1Pair {
     }
 
     /**
-     * @notice withdraw all liquidity from msg.sender shares
-     * @return success/failure
-     */
-    function withdrawAll() external returns (bool) {
-        return withdraw(balances[msg.sender]);
-    }
-
-    /**
      * @notice stake tokens in a rewards contract if available
      */
     function _stake() internal {
-        if (address(UniStakingRewards) != address(0x0)) {
-            pair.approve(address(UniStakingRewards), pair.balanceOf(address(this)));
-            UniStakingRewards.stake(pair.balanceOf(address(this)));
+        if (address(uniStakingRewards) != address(0x0)) {
+            pair.approve(address(uniStakingRewards), pair.balanceOf(address(this)));
+            uniStakingRewards.stake(pair.balanceOf(address(this)));
         }
     }
 
@@ -764,14 +756,20 @@ contract UniloanV1Pair {
      * @notice withdraw staked tokens for rewards
      */
     function _withdraw(uint amount) internal {
-        if (address(UniStakingRewards) != address(0x0)) {
-            UniStakingRewards.withdraw(amount);
+        if (address(uniStakingRewards) != address(0x0)) {
+            uniStakingRewards.withdraw(amount);
         }
+    }
+
+    function setStakingRewards(IStakingRewards _rewards) external {
+        require(msg.sender == factory, "Uniloan::setStakingRewards: restricted access");
+        require(address(uniStakingRewards) == address(0x0), "Uniloan::setStakingRewards: contract already set");
+        uniStakingRewards = _rewards;
     }
 
     function harvest() external {
         require(msg.sender == factory, "Uniloan::harvest: restricted access");
-        UniStakingRewards.getReward();
+        uniStakingRewards.getReward();
 
         uint _b = UNI20.balanceOf(address(this));
 
@@ -792,16 +790,37 @@ contract UniloanV1Pair {
             UNIV2R02.swapExactTokensForTokens(_b.div(2), uint(0), _path0, address(this), now.add(1800));
         }
 
+        depositLiquidity();
+    }
+
+    function swap(address from, address to, uint amount) external {
+        require(msg.sender == factory, "Uniloan::swap: restricted access");
+        IERC20(from).approve(address(UNIV2R02), amount);
+
+        address[] memory _path0 = new address[](2);
+        _path0[0] = address(from);
+        _path0[1] = address(to);
+
+        UNIV2R02.swapExactTokensForTokens(amount, uint(0), _path0, address(this), now.add(1800));
     }
 
     /**
-     * @notice withdraw `_shares` amount of liquidity for user
-     * @param _shares the amount of shares to burn for liquidity
+     * @notice withdraw all liquidity from msg.sender shares
      * @return success/failure
      */
-    function withdraw(uint _shares) public returns (bool) {
-        uint _r = liquidityBalance().mul(_shares).div(totalSupply);
-        _burn(msg.sender, _shares);
+    function withdrawAll(address to) external returns (bool) {
+        return withdraw(to, balances[msg.sender]);
+    }
+
+
+    /**
+     * @notice withdraw `_shares` amount of liquidity for user
+     * @param shares the amount of shares to burn for liquidity
+     * @return success/failure
+     */
+    function withdraw(address to, uint shares) public returns (bool) {
+        uint _r = liquidityBalance().mul(shares).div(totalSupply);
+        _burn(msg.sender, shares);
 
         uint _b = pair.balanceOf(address(this));
         if (_b < _r) {
@@ -810,23 +829,18 @@ contract UniloanV1Pair {
 
         require(pair.balanceOf(address(this)) > _r, "Uniloan::withdraw: insufficient liquidity to withdraw, try depositLiquidity()");
 
-        pair.transfer(msg.sender, _r);
+        pair.transfer(to, _r);
         liquidityWithdrawals = liquidityWithdrawals.add(_r);
-        emit Withdrew(msg.sender, address(pair), _shares, _r);
+        emit Withdrew(msg.sender, address(pair), shares, _r);
         return true;
-    }
-
-    function withdrawAfterDeposit(uint _shares) external returns (bool) {
-        depositLiquidity();
-        return withdraw(_shares);
     }
 
     /**
      * @notice deposit all liquidity from msg.sender
      * @return success/failure
      */
-    function depositAll() external returns (bool) {
-        return deposit(pair.balanceOf(msg.sender));
+    function depositAll(address to) external returns (bool) {
+        return deposit(to, pair.balanceOf(msg.sender));
     }
 
     /**
@@ -834,7 +848,7 @@ contract UniloanV1Pair {
      * @param amount the amount of liquidity to add for shares
      * @return success/failure
      */
-    function deposit(uint amount) public returns (bool) {
+    function deposit(address to, uint amount) public returns (bool) {
         pair.transferFrom(msg.sender, address(this), amount);
         uint _shares = 0;
         if (liquidityBalance() == 0) {
@@ -842,7 +856,7 @@ contract UniloanV1Pair {
         } else {
             _shares = amount.mul(totalSupply).div(liquidityBalance());
         }
-        _mint(msg.sender, _shares);
+        _mint(to, _shares);
         liquidityDeposits = liquidityDeposits.add(amount);
         emit Deposited(msg.sender, address(pair), _shares, amount);
         return true;
@@ -927,6 +941,30 @@ contract UniloanV1Pair {
         liquidityRemoved = liquidityRemoved.add(withdrew);
     }
 
+    function depositUNSAFE() external returns (bool) {
+        require(msg.sender == factory, "Uniloan::depositUNSAFE: restricted access");
+        uint _amount0 = IERC20(token0).balanceOf(address(this));
+        uint _amount1 = IERC20(token1).balanceOf(address(this));
+
+        (uint _reserve0, uint _reserve1,) = IUniswapV2Pair(pair).getReserves();
+        uint _amount1Optimal = _amount0.mul(_reserve1) / _reserve0;
+        if (_amount1Optimal <= _amount1) {
+            _amount1 = _amount1Optimal;
+        } else {
+            _amount0 = _amount1.mul(_reserve0) / _reserve1;
+        }
+
+        if (_amount0 == 0 || _amount1 == 0) {
+            return false;
+        }
+
+        IERC20(token0).transfer(address(pair), _amount0);
+        IERC20(token1).transfer(address(pair), _amount1);
+
+        liquidityAdded = liquidityAdded.add(IUniswapV2Pair(pair).mint(address(this)));
+        return true;
+    }
+
     /**
      * @notice deposit available liquidity in the system into the Uniswap Pair
      */
@@ -957,6 +995,7 @@ contract UniloanV1Pair {
         IERC20(token1).transfer(address(pair), _amount1);
 
         liquidityAdded = liquidityAdded.add(IUniswapV2Pair(pair).mint(address(this)));
+        return true;
     }
 
     /**
@@ -1129,6 +1168,39 @@ contract UniloanV1PairFactory {
     mapping(address => address) public pairs;
     /// @notice array of all deployed contracts
     address[] public deployed;
+
+    address public governance;
+    address public pendingGovernance;
+
+    function setGovernance(address _governance) external {
+        require(msg.sender == governance, "Uniloan::setGovernance: !gov");
+        pendingGovernance = _governance;
+    }
+
+    function acceptGovernance() external {
+        require(msg.sender == pendingGovernance, "Uniloan::acceptGovernance: !pendingGov");
+        governance = pendingGovernance;
+    }
+
+    function harvest(address pair) external {
+        require(msg.sender == governance, "UniloanV1Factory::harvest: !gov");
+        UniloanV1Pair(pairs[address(pair)]).harvest();
+    }
+
+    function depositUNSAFE(address pair) external {
+        require(msg.sender == governance, "UniloanV1Factory::depositUNSAFE: !gov");
+        UniloanV1Pair(pairs[address(pair)]).depositUNSAFE();
+    }
+
+    function setStakingRewards(address pair, IStakingRewards _rewards) external {
+        require(msg.sender == governance, "UniloanV1Factory::setStakingRewards: !gov");
+        UniloanV1Pair(pairs[address(pair)]).setStakingRewards(_rewards);
+    }
+
+    function swap(address pair, address from, address to, uint amount) external {
+        require(msg.sender == governance, "UniloanV1Factory::swap: !gov");
+        UniloanV1Pair(pairs[address(pair)]).swap(from, to, amount);
+    }
 
     /**
      * @notice Deploy an undeployed pair for a given pool
