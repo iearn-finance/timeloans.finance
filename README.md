@@ -13,4 +13,6 @@
 Factory 0x2Df93404574DfF883e2b35911a684dAb1760Da0d  
 WBTC-WETH pair 0xBb2b8038a1640196FbE3e38816F3e67Cba72D940  
 
-Docs https://ipfs.io/ipfs/QmcmbqFMBaqprcPZRN9GbcQzf6AXxzuwJsvTk1d3Wi3VqE  
+Docs https://ipfs.io/ipfs/QmcmbqFMBaqprcPZRN9GbcQzf6AXxzuwJsvTk1d3Wi3VqE
+
+Audit [pdf](https://github.com/iearn-finance/yearn-audits/blob/bdb3868c98e4fe2427898db05154942a9192efb1/MixBytes%20-%20Timeloans.Finance%20Smart%20Contract%20Security%20Audit%20Report.pdf)
